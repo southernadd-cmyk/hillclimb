@@ -118,6 +118,9 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .algo-box p { margin: 0 0 10px; font-size: .95rem; }
 .algo-out { font-size: .95rem; min-height: 1.5em; }
 .hidden { display: none; }
+.toggle { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; color: var(--ink-soft); cursor: pointer; }
+.toggle input { width: 18px; height: 18px; accent-color: var(--climber); margin: 0; }
+.algo-toggle { margin: 0 0 12px; font-size: .95rem; }
 .hint { font-size: .9rem; color: var(--ink-soft); margin-top: 12px; }
 </style>
 </head>
@@ -132,6 +135,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
       <label for="code">Map</label>
       <input id="code" inputmode="numeric" maxlength="4" aria-label="Map code">
       <button id="load">Load map</button>
+      <label class="toggle"><input type="checkbox" id="flat"> Flat areas</label>
       <button id="newmap">New map</button>
     </div>
   </header>
@@ -161,6 +165,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
       <div class="algo-box hidden" id="algoBox">
         <h3>Now watch the algorithm</h3>
         <p>Hill climbing always moves to the highest neighbour, and stops when no neighbour is higher.</p>
+        <label class="toggle algo-toggle"><input type="checkbox" id="sideways"> Allow sideways moves (up to 20 in a row)</label>
         <div class="row">
           <button id="runHC">Climb from your start</button>
           <button id="runRR">10 random restarts</button>
@@ -184,6 +189,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
     hint: document.getElementById("hint"), legend: document.getElementById("legend"),
     runHC: document.getElementById("runHC"), runRR: document.getElementById("runRR")
   };
+  var flatBox = document.getElementById("flat");
+  var sidewaysBox = document.getElementById("sideways");
   var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   function rng(seed) {
@@ -197,7 +204,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   }
 
   // ---------- Map generation ----------
-  function makeMap(seed) {
+  function makeMap(seed, flat) {
     var r = rng(seed * 7919 + 13);
     var hills = [{ x: 2.5 + r() * (N - 5), y: 2.5 + r() * (N - 5), a: 1, s: 2.4 + r() * 0.9 }];
     var want = 3 + Math.floor(r() * 2), tries = 0;
@@ -226,6 +233,13 @@ button:disabled { opacity: .45; cursor: not-allowed; }
     for (var yy = 0; yy < N; yy++) for (var xx = 0; xx < N; xx++) {
       if (grid[yy][xx] === 99 && raw[yy][xx] !== hi) grid[yy][xx] = 98;
     }
+    // Flat areas: round every height except the summit to steps of 6, creating terraces
+    if (flat) {
+      for (var fy = 0; fy < N; fy++) for (var fx = 0; fx < N; fx++) {
+        if (raw[fy][fx] === hi) continue;
+        grid[fy][fx] = Math.min(96, Math.max(6, Math.round(grid[fy][fx] / 6) * 6));
+      }
+    }
     return grid;
   }
 
@@ -249,6 +263,32 @@ button:disabled { opacity: .45; cursor: not-allowed; }
       if (!best || H(best) <= H(p)) return path;
       p = best; path.push(p);
     }
+  }
+
+  // Hill climbing with sideways moves: equal neighbours count as a move,
+  // with two safeguards: never step back onto a visited square, and give up
+  // after too many flat steps in a row.
+  function climbSideways(start, maxSideways) {
+    var path = [start], p = start, sideways = 0, visited = {};
+    visited[key(p)] = true;
+    while (true) {
+      var best = null;
+      neighbours(p).forEach(function (n) {
+        if (visited[key(n)]) return;
+        if (!best || H(n) > H(best)) best = n;
+      });
+      if (!best || H(best) < H(p)) return path;
+      if (H(best) === H(p)) {
+        sideways++;
+        if (sideways > maxSideways) return path;
+      } else {
+        sideways = 0;
+      }
+      p = best; visited[key(p)] = true; path.push(p);
+    }
+  }
+  function algoClimb(start) {
+    return sidewaysBox.checked ? climbSideways(start, 20) : climb(start);
   }
 
   function findSummit() {
@@ -290,9 +330,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   function load(seed) {
     seed = Math.max(0, Math.min(9999, seed | 0));
     codeInput.value = String(seed).padStart(4, "0");
-    try { history.replaceState(null, "", "#map=" + codeInput.value); } catch (e) {}
+    state.flat = flatBox.checked;
+    try { history.replaceState(null, "", "#map=" + codeInput.value + (state.flat ? "&flat=1" : "")); } catch (e) {}
     state.seed = seed;
-    state.grid = makeMap(seed);
+    state.grid = makeMap(seed, state.flat);
     state.summit = findSummit();
     state.start = chooseStart(seed);
     reset();
@@ -397,6 +438,9 @@ button:disabled { opacity: .45; cursor: not-allowed; }
     if (here === top) {
       html = '<h2>You found the summit: ' + top + '</h2><p>You reached the highest point in ' + state.steps + ' step' + (state.steps === 1 ? '' : 's') + '.</p>';
       els.msg.className = "msg verdict-good";
+    } else if (!higherNext && neighbours(state.pos).some(function (n) { return H(n) === here; })) {
+      html = '<h2>You stopped at ' + here + '. The summit is ' + top + '.</h2><p>Nothing next to you was higher, but some squares were the same height. You were on a <strong>plateau</strong>: a flat area where you can\'t tell which way is up. Some plateaus are flat hilltops; others are flat shoulders with higher ground beyond.</p>';
+      els.msg.className = "msg verdict-bad";
     } else if (!higherNext) {
       html = '<h2>You stopped at ' + here + '. The summit is ' + top + '.</h2><p>Nothing next to you was higher, so you were on a peak, just not the highest one. That\'s a <strong>local maximum</strong>.</p>';
       els.msg.className = "msg verdict-bad";
@@ -421,12 +465,12 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   function runHC() {
     els.runHC.disabled = true; els.runRR.disabled = true;
     state.algo = {}; state.algoEnds = {};
-    var path = climb(state.start), end = path[path.length - 1];
+    var path = algoClimb(state.start), end = path[path.length - 1];
     animatePath(path, function () {
       state.algoEnds[key(end)] = true; render();
       var top = H(state.summit);
       els.algoOut.innerHTML = "From your start, hill climbing stopped at <strong>" + H(end) + "</strong> after " + (path.length - 1) + " steps. " +
-        (H(end) === top ? "It found the summit." : "It got stuck on a local maximum, just like a climber in the fog.");
+        (H(end) === top ? "It found the summit." : (sidewaysBox.checked ? "It still didn't reach the summit." : "It got stuck, just like a climber in the fog."));
       els.runHC.disabled = false; els.runRR.disabled = false;
     });
   }
@@ -438,7 +482,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
     var ends = [], top = H(state.summit), found = 0;
     for (var i = 0; i < 10; i++) {
       var s = { x: Math.floor(r() * N), y: Math.floor(r() * N) };
-      var path = climb(s), e = path[path.length - 1];
+      var path = algoClimb(s), e = path[path.length - 1];
       path.forEach(function (p) { state.algo[key(p)] = true; });
       state.algoEnds[key(e)] = true;
       ends.push(H(e)); if (H(e) === top) found++;
@@ -457,7 +501,11 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   els.runHC.addEventListener("click", runHC);
   els.runRR.addEventListener("click", runRR);
 
+  flatBox.addEventListener("change", function () { load(state.seed); });
+  sidewaysBox.addEventListener("change", function () { state.algo = {}; state.algoEnds = {}; els.algoOut.textContent = ""; render(); });
+
   buildBoard();
+  flatBox.checked = /flat=1/.test(location.hash);
   var m = /map=(\d{1,4})/.exec(location.hash);
   load(m ? parseInt(m[1], 10) : Math.floor(Math.random() * 10000));
 })();
